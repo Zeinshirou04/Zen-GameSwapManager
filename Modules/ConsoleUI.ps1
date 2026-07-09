@@ -15,24 +15,19 @@ function Show-Header {
 }
 
 function Show-DriveStats {
-    param($Active, $Storage)
+    param($Gaming, $Storage)
 
-    $e = Get-PSDrive $Active
-    $f = Get-PSDrive $Storage
-
-    $eFree  = [math]::Round($e.Free/1GB,2)
-    $eUsed  = [math]::Round(($e.Used)/1GB,2)
-    $eTotal = [math]::Round(($e.Used + $e.Free)/1GB,2)
-
-    $fFree  = [math]::Round($f.Free/1GB,2)
-    $fUsed  = [math]::Round(($f.Used)/1GB,2)
-    $fTotal = [math]::Round(($f.Used + $f.Free)/1GB,2)
-
-    Write-Host ("Detected: E slot looks empty / not managed") -ForegroundColor Green
+    Write-Host ("Configured gaming drives: {0}; storage: {1}:" -f (($Gaming) -join ", "), $Storage) -ForegroundColor Green
     Write-Host ""
 
-    Write-Host ("{0,-3} Free {1,8} GB | Used {2,8} GB | Total {3,8} GB" -f "($Active):\", $eFree, $eUsed, $eTotal) -ForegroundColor White
-    Write-Host ("{0,-3} Free {1,8} GB | Used {2,8} GB | Total {3,8} GB" -f "($Storage):\", $fFree, $fUsed, $fTotal) -ForegroundColor White
+    foreach ($driveLetter in @($Gaming) + @($Storage)) {
+        $drive = Get-PSDrive $driveLetter
+        $free  = [math]::Round($drive.Free/1GB,2)
+        $used  = [math]::Round(($drive.Used)/1GB,2)
+        $total = [math]::Round(($drive.Used + $drive.Free)/1GB,2)
+
+        Write-Host ("{0,-4} Free {1,8} GB | Used {2,8} GB | Total {3,8} GB" -f "($driveLetter):\", $free, $used, $total) -ForegroundColor White
+    }
 
     Write-Host ""
     Write-Host ("=" * [console]::WindowWidth) -ForegroundColor DarkCyan

@@ -1,13 +1,24 @@
 function Get-UnmanagedActiveEntries {
-    param($Games)
+    param($Games, $Config)
 
+    $gamingSlots = Get-ConfiguredGamingSlots $Config
     $managedEPaths = @($Games |
-        Where-Object { $_.EPath } |
-        ForEach-Object { $_.EPath.ToLowerInvariant() })
+        ForEach-Object {
+            $game = $_
+            foreach ($slot in $gamingSlots) {
+                $path = Get-GamePathForSlot -Game $game -Slot $slot
+                if ($path) { $path.ToLowerInvariant() }
+            }
+        })
 
     $roots = @($Games |
-        Where-Object { $_.EPath } |
-        ForEach-Object { Split-Path $_.EPath -Parent } |
+        ForEach-Object {
+            $game = $_
+            foreach ($slot in $gamingSlots) {
+                $path = Get-GamePathForSlot -Game $game -Slot $slot
+                if ($path) { Split-Path $path -Parent }
+            }
+        } |
         Sort-Object -Unique)
 
     $unmanaged = @()
@@ -33,10 +44,10 @@ function Show-Status {
 
     Write-Host ""
     Write-Host ("=" * 52) -ForegroundColor DarkCyan
-    Write-Host "Active Games on E:" -ForegroundColor Cyan
+    Write-Host "Active Games on Gaming Drives:" -ForegroundColor Cyan
     Write-Host ("=" * 52) -ForegroundColor DarkCyan
 
-    $active = @($Games | Where-Object { $_.State -eq "E" })
+    $active = @($Games | Where-Object { $_.State -eq "Active" -or $_.State -eq "E" })
 
     if ($active.Count -eq 0) {
         Write-Host "  (No active games)" -ForegroundColor DarkGray
@@ -44,7 +55,7 @@ function Show-Status {
     else {
         foreach ($g in $active) {
             $size = [math]::Round(($g.SizeBytes / 1GB), 2)
-            Write-Host ("  - {0} ({1}GB)" -f $g.Name, $size) -ForegroundColor White
+            Write-Host ("  - {0} [{1}:] ({2}GB)" -f $g.Name, $g.ActiveSlot, $size) -ForegroundColor White
         }
     }
 
@@ -54,7 +65,7 @@ function Show-Status {
 function Select-Game {
     param($Games)
 
-    $stored = @($Games | Where-Object { $_.State -eq "F" })
+    $stored = @($Games | Where-Object { $_.State -eq "Storage" -or $_.State -eq "F" })
 
     if ($stored.Count -eq 0) {
         Write-Host ""
@@ -198,7 +209,7 @@ function Select-AdditionalGames {
 
         $selected += $batch
         $remaining -= $batchTotal
-        Write-Host ("Added {0} game(s) to move plan." -f $batch.Count) -ForegroundColor Green
+        Write-Host ("Added {0} game(s) to copy plan." -f $batch.Count) -ForegroundColor Green
     }
 
     return [pscustomobject]@{
@@ -249,23 +260,175 @@ function Invoke-MoveWithRecovery {
     }
 }
 
+
+function Invoke-CopyWithRecovery {
+    param(
+        $Source,
+        $Destination,
+        $Name,
+        $Config
+    )
+
+    while ($true) {
+        try {
+            Copy-Game -Source $Source -Destination $Destination -Name $Name -Config $Config
+            return $true
+        }
+        catch {
+            $errorText = $_.Exception.Message
+            Write-Host ""
+            Write-Host ("Copy failed for '{0}': {1}" -f $Name, $errorText) -ForegroundColor Red
+            Write-Host "Fix the issue (free space, permissions) then choose:" -ForegroundColor Yellow
+            Write-Host "  CONTINUE = retry copy  |  SKIP = skip this game  |  ABORT = stop operation"
+
+            $action = (Read-Host "> ").Trim().ToUpper()
+
+            switch ($action) {
+                "CONTINUE" {
+                    Write-Log "Continue requested for $Name after copy failure"
+                    continue
+                }
+                "SKIP" {
+                    Write-Log "Skipped copy for $Name after failure" "WARN"
+                    return $false
+                }
+                "ABORT" {
+                    throw "Operation aborted by user after copy failure for $Name"
+                }
+                default {
+                    Write-Host "Invalid option. Type CONTINUE, SKIP, or ABORT." -ForegroundColor Yellow
+                }
+            }
+        }
+    }
+}
+
+
+function Select-TargetGamingDrive {
+    param(
+        $Config,
+        [array]$ActiveGames,
+        [long]$RequiredBytes
+    )
+
+    $gamingSlots = Get-ConfiguredGamingSlots $Config
+
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "       Choose Gaming Drive Target" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor DarkCyan
+
+    for ($i = 0; $i -lt $gamingSlots.Count; $i++) {
+        $slot = $gamingSlots[$i]
+        $free = Get-FreeSpace $slot
+        $verifiedRemovable = @($ActiveGames | Where-Object {
+            $_.ActiveSlot -eq $slot -and (Test-StorageCopyMatchesActive -Game $_)
+        })
+        $removableSize = ($verifiedRemovable | Measure-Object SizeBytes -Sum).Sum
+        if ($null -eq $removableSize) { $removableSize = 0 }
+        $usable = $free + $removableSize
+        $fits = if ($RequiredBytes -le $usable) { "fits" } else { "not enough" }
+
+        Write-Host ("[{0}] {1}: Free {2,8:N2} GB | Usable after verified delete {3,8:N2} GB | {4}" -f ($i + 1), $slot, ($free / 1GB), ($usable / 1GB), $fits)
+    }
+
+    Write-Host ""
+    Write-Host "Choose the drive to copy the game to (Q to cancel):" -ForegroundColor Green
+    $choice = (Read-Host ">").Trim()
+
+    if ($choice.ToUpper() -eq "Q") { return $null }
+    if (-not ($choice -match '^\d+$')) { throw "Invalid drive selection '$choice'." }
+
+    $index = [int]$choice - 1
+    if ($index -lt 0 -or $index -ge $gamingSlots.Count) { throw "Drive selection '$choice' is out of range." }
+
+    return $gamingSlots[$index]
+}
+
+function Select-ActiveGameForRemoval {
+    param($Games)
+
+    $active = @($Games | Where-Object { $_.State -eq "Active" -or $_.State -eq "E" })
+    if ($active.Count -eq 0) {
+        Write-Host "No active games are available to remove." -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "       Active Games to Remove" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor DarkCyan
+
+    for ($i = 0; $i -lt $active.Count; $i++) {
+        $size = [math]::Round(($active[$i].SizeBytes / 1GB), 2)
+        Write-Host ("[{0}] {1,-25} {2}: {3,8} GB" -f ($i + 1), $active[$i].Name, $active[$i].ActiveSlot, $size)
+    }
+
+    Write-Host ""
+    Write-Host "Choose the active game to remove (Q to cancel):" -ForegroundColor Green
+    $choice = (Read-Host ">").Trim()
+
+    if ($choice.ToUpper() -eq "Q") { return $null }
+    if (-not ($choice -match '^\d+$')) { throw "Invalid selection '$choice'." }
+
+    $index = [int]$choice - 1
+    if ($index -lt 0 -or $index -ge $active.Count) { throw "Selection '$choice' is out of range." }
+
+    return $active[$index]
+}
+
+function Invoke-RemoveOnlyProcess {
+    param($Config)
+
+    Write-Log "Remove-only operation started"
+
+    $games = Get-Games $Config
+    $games = Get-GameState $games $Config
+
+    foreach ($g in $games) {
+        $sizePath = if ($g.State -eq "Active" -or $g.State -eq "E") { $g.ActivePath } else { $g.StoragePath }
+        $size = Get-GameSize $sizePath
+        $g | Add-Member -NotePropertyName SizeBytes -NotePropertyValue $size -Force
+    }
+
+    $selected = Select-ActiveGameForRemoval $games
+    if ($null -eq $selected) { return }
+
+    if (-not (Test-StorageCopyMatchesActive -Game $selected)) {
+        throw "Refusing to remove '$($selected.Name)' because storage copy is missing or size does not match active copy."
+    }
+
+    Write-Host ""
+    Write-Host ("Remove '{0}' from {1}: ? Storage copy on {2}: was verified by size. (Y/N)" -f $selected.Name, $selected.ActiveSlot, $Config.Slots.Storage) -ForegroundColor Yellow
+    $confirm = (Read-Host).ToUpper()
+    if ($confirm -ne "Y") {
+        Write-Host "Remove cancelled."
+        Write-Log "Remove-only operation cancelled at confirmation"
+        return
+    }
+
+    Remove-ActiveGame -Path $selected.ActivePath -Name $selected.Name
+    Write-Log "Remove-only operation finished successfully"
+    Write-Host "Remove completed successfully." -ForegroundColor Green
+}
+
 function Invoke-SwapProcess {
     param($Config)
 
     Write-Log "Swap operation started"
 
     $games = Get-Games $Config
-    $games = Get-GameState $games
+    $games = Get-GameState $games $Config
 
     foreach ($g in $games) {
-        $sizePath = if ($g.State -eq "E") { $g.EPath } else { $g.FPath }
+        $sizePath = if ($g.State -eq "Active" -or $g.State -eq "E") { $g.ActivePath } else { $g.StoragePath }
         $size = Get-GameSize $sizePath
         $g | Add-Member -NotePropertyName SizeBytes -NotePropertyValue $size -Force
     }
 
     Show-Status $games
 
-    $unmanagedActive = Get-UnmanagedActiveEntries -Games $games
+    $unmanagedActive = Get-UnmanagedActiveEntries -Games $games -Config $Config
     if ($unmanagedActive.Count -gt 0) {
         $maxExamples = $Config.Safety.MaxUnmanagedExamples
         if ($null -eq $maxExamples -or $maxExamples -lt 1) {
@@ -295,10 +458,15 @@ function Invoke-SwapProcess {
         return
     }
 
-    $currentFree = Get-FreeSpace $Config.Slots.Active
-    $currentEGames = @($games | Where-Object { $_.State -eq "E" })
+    $currentEGames = @($games | Where-Object { $_.State -eq "Active" -or $_.State -eq "E" })
+    $installTarget = Select-TargetGamingDrive -Config $Config -ActiveGames $currentEGames -RequiredBytes $selected.SizeBytes
+    if ($null -eq $installTarget) { return }
 
-    $eSize = ($currentEGames | Measure-Object SizeBytes -Sum).Sum
+    $currentFree = Get-FreeSpace $installTarget
+    $targetActiveGames = @($currentEGames | Where-Object { $_.ActiveSlot -eq $installTarget })
+    $selected | Add-Member -NotePropertyName InstallPath -NotePropertyValue (Get-GamePathForSlot -Game $selected -Slot $installTarget) -Force
+
+    $eSize = ($targetActiveGames | Measure-Object SizeBytes -Sum).Sum
     if ($null -eq $eSize) { $eSize = 0 }
 
     $capacity = $currentFree + $eSize
@@ -306,7 +474,7 @@ function Invoke-SwapProcess {
     $selectedSize = $selected.SizeBytes
 
     if ($selectedSize -gt $capacity) {
-        throw ("Selected game cannot fit into E. Needed {0:N2} GB, available {1:N2} GB." -f ($selectedSize / 1GB), ($capacity / 1GB))
+        throw ("Selected game cannot fit into {0}:. Needed {1:N2} GB, available {2:N2} GB." -f $installTarget, ($selectedSize / 1GB), ($capacity / 1GB))
     }
 
     $toMove = @($selected)
@@ -314,7 +482,7 @@ function Invoke-SwapProcess {
 
     $additionalCandidates = @($games |
         Where-Object {
-            $_.State -eq "F" -and
+            $_.State -eq "Storage" -and
             $_.Name -notin $toMove.Name
         })
 
@@ -325,12 +493,15 @@ function Invoke-SwapProcess {
 
     $additional = @($additionalResult.Selected)
     if ($additional.Count -gt 0) {
+        foreach ($g in $additional) {
+            $g | Add-Member -NotePropertyName InstallPath -NotePropertyValue (Get-GamePathForSlot -Game $g -Slot $installTarget) -Force
+        }
         $toMove += $additional
     }
 
     Write-Host ""
     Write-Host ("=" * 52) -ForegroundColor DarkCyan
-    Write-Host "Planned Moves:" -ForegroundColor Cyan
+    Write-Host "Planned Copies:" -ForegroundColor Cyan
     Write-Host ("=" * 52) -ForegroundColor DarkCyan
 
     foreach ($g in $toMove) {
@@ -339,7 +510,7 @@ function Invoke-SwapProcess {
     }
 
     Write-Host ""
-    Write-Host "Ready to execute move plan." -ForegroundColor Green
+    Write-Host "Ready to execute copy/delete plan." -ForegroundColor Green
     Write-Host "Proceed? (Y/N)"
     $confirm = (Read-Host).ToUpper()
 
@@ -353,41 +524,48 @@ function Invoke-SwapProcess {
     if ($requiredSpace -lt 0) { $requiredSpace = 0 }
 
     $toFlush = @()
+
     if ($requiredSpace -gt 0) {
         $freed = 0
-        foreach ($g in ($currentEGames | Sort-Object SizeBytes -Descending)) {
+        foreach ($g in ($targetActiveGames | Sort-Object SizeBytes -Descending)) {
+            if ($g.Name -in $toFlush.Name) { continue }
+            if (-not (Test-StorageCopyMatchesActive -Game $g)) { continue }
+
             $toFlush += $g
             $freed += $g.SizeBytes
             if ($freed -ge $requiredSpace) { break }
         }
 
         if ($freed -lt $requiredSpace) {
-            throw "Unable to free enough space in E for selected moves."
+            throw ("Unable to free enough space in {0}: for selected copies." -f $installTarget)
         }
     }
 
     Write-Host ""
     Write-Host ("=" * 52) -ForegroundColor DarkCyan
     Write-Host "Execution started. Please wait..." -ForegroundColor Green
-    Write-Host ("Flush from E to F: {0} game(s)" -f $toFlush.Count) -ForegroundColor Gray
-    Write-Host ("Move from F to E : {0} game(s)" -f $toMove.Count) -ForegroundColor Gray
+    Write-Host ("Delete verified active copies : {0} game(s)" -f $toFlush.Count) -ForegroundColor Gray
+    Write-Host ("Copy from storage to {0}: {1} game(s)" -f $installTarget, $toMove.Count) -ForegroundColor Gray
     Write-Host ("=" * 52) -ForegroundColor DarkCyan
 
     $flushIndex = 0
     foreach ($g in $toFlush) {
         $flushIndex++
-        Write-Host ("[Flush {0}/{1}] {2}" -f $flushIndex, $toFlush.Count, $g.Name) -ForegroundColor Yellow
-        Invoke-MoveWithRecovery -Source $g.EPath -Destination $g.FPath -Name $g.Name -Config $Config | Out-Null
+        Write-Host ("[Delete {0}/{1}] {2}" -f $flushIndex, $toFlush.Count, $g.Name) -ForegroundColor Yellow
+        if (-not (Test-StorageCopyMatchesActive -Game $g)) {
+            throw "Refusing to delete '$($g.Name)' because storage copy is missing or size does not match active copy."
+        }
+        Remove-ActiveGame -Path $g.ActivePath -Name $g.Name
     }
 
     $moveIndex = 0
     foreach ($g in $toMove) {
         $moveIndex++
-        Write-Host ("[Move  {0}/{1}] {2}" -f $moveIndex, $toMove.Count, $g.Name) -ForegroundColor Cyan
-        Invoke-MoveWithRecovery -Source $g.FPath -Destination $g.EPath -Name $g.Name -Config $Config | Out-Null
+        Write-Host ("[Copy  {0}/{1}] {2}" -f $moveIndex, $toMove.Count, $g.Name) -ForegroundColor Cyan
+        Invoke-CopyWithRecovery -Source $g.StoragePath -Destination $g.InstallPath -Name $g.Name -Config $Config | Out-Null
     }
 
-    Write-Log "Swap operation finished successfully"
+    Write-Log "Copy/delete operation finished successfully"
     Write-Host ""
     Write-Host ("=" * 52) -ForegroundColor DarkCyan
     Write-Host "Operation completed successfully." -ForegroundColor Green
@@ -431,8 +609,9 @@ function Show-ProgramConfig {
     Write-Host "              Program Config" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor DarkCyan
 
-    Write-Host ("Slots.Active                : {0}" -f $Config.Slots.Active)
+    Write-Host ("Slots.Gaming                : {0}" -f (($Config.Slots.Gaming) -join ", "))
     Write-Host ("Slots.Storage               : {0}" -f $Config.Slots.Storage)
+    Write-Host ("Slots.Active                : {0}" -f $Config.Slots.Active)
     Write-Host ("Safety.AbortWhenUnmanaged   : {0}" -f $Config.Safety.AbortWhenUnmanaged)
     Write-Host ("Safety.MaxUnmanagedExamples : {0}" -f $Config.Safety.MaxUnmanagedExamples)
     Write-Host ("Robocopy.RetryCount         : {0}" -f $Config.Robocopy.RetryCount)
@@ -474,16 +653,25 @@ function New-GameConfigFile {
     $content = @"
 param(`$Config)
 
-`$active  = `$Config.Slots.Active
-`$storage = `$Config.Slots.Storage
+`$gamingSlots = Get-ConfiguredGamingSlots `$Config
+`$activeAlias = `$Config.Slots.Active
+`$storage     = `$Config.Slots.Storage
 
-`$activeRoot  = "`$(`$active):\\$LibraryRelativePath"
+`$activePaths = @{}
+foreach (`$slot in `$gamingSlots) {
+    `$root = "`$(`$slot):\\$LibraryRelativePath"
+    `$activePaths[`$slot] = Join-Path `$root "$GameFolder"
+}
+
+`$activeRoot = "`$(`$activeAlias):\\$LibraryRelativePath"
 `$storageRoot = "`$(`$storage):\\$LibraryRelativePath"
 
 @{
-    Name  = "$Name"
-    EPath = Join-Path `$activeRoot  "$GameFolder"
-    FPath = Join-Path `$storageRoot "$GameFolder"
+    Name        = "$Name"
+    ActivePaths = `$activePaths
+    EPath       = Join-Path `$activeRoot "$GameFolder"
+    FPath       = Join-Path `$storageRoot "$GameFolder"
+    StoragePath = Join-Path `$storageRoot "$GameFolder"
 }
 "@
 
@@ -578,7 +766,7 @@ function Edit-GameConfigInteractively {
         return
     }
 
-    $tempConfig = @{ Slots = @{ Active = "E"; Storage = "F" } }
+    $tempConfig = @{ Slots = @{ Gaming = @("D", "E"); Active = "E"; Storage = "O" } }
 
     try {
         $gameObj = & $selected.FullName $tempConfig
@@ -615,16 +803,25 @@ function Edit-GameConfigInteractively {
     $content = @"
 param(`$Config)
 
-`$active  = `$Config.Slots.Active
-`$storage = `$Config.Slots.Storage
+`$gamingSlots = Get-ConfiguredGamingSlots `$Config
+`$activeAlias = `$Config.Slots.Active
+`$storage     = `$Config.Slots.Storage
 
-`$activeRoot  = "`$(`$active):\\$newLibraryPath"
+`$activePaths = @{}
+foreach (`$slot in `$gamingSlots) {
+    `$root = "`$(`$slot):\\$newLibraryPath"
+    `$activePaths[`$slot] = Join-Path `$root "$newFolder"
+}
+
+`$activeRoot = "`$(`$activeAlias):\\$newLibraryPath"
 `$storageRoot = "`$(`$storage):\\$newLibraryPath"
 
 @{
-    Name  = "$newName"
-    EPath = Join-Path `$activeRoot  "$newFolder"
-    FPath = Join-Path `$storageRoot "$newFolder"
+    Name        = "$newName"
+    ActivePaths = `$activePaths
+    EPath       = Join-Path `$activeRoot "$newFolder"
+    FPath       = Join-Path `$storageRoot "$newFolder"
+    StoragePath = Join-Path `$storageRoot "$newFolder"
 }
 "@
 
@@ -643,12 +840,13 @@ function Start-SwapProcess {
         Write-Host "============================================" -ForegroundColor DarkCyan
         Write-Host "                 Main Menu" -ForegroundColor Cyan
         Write-Host "============================================" -ForegroundColor DarkCyan
-        Write-Host "[1] Move games"
-        Write-Host "[2] Enable/Disable game config"
-        Write-Host "[3] Add game config"
-        Write-Host "[4] Edit existing config"
-        Write-Host "[5] View program config"
-        Write-Host "[6] View game config list"
+        Write-Host "[1] Copy game from storage to a gaming drive"
+        Write-Host "[2] Remove active game from a gaming drive"
+        Write-Host "[3] Enable/Disable game config"
+        Write-Host "[4] Add game config"
+        Write-Host "[5] Edit existing config"
+        Write-Host "[6] View program config"
+        Write-Host "[7] View game config list"
         Write-Host "[Q] Quit"
 
         $choice = (Read-Host "Choose an option").Trim().ToUpper()
@@ -656,17 +854,18 @@ function Start-SwapProcess {
         try {
             switch ($choice) {
                 "1" { Invoke-SwapProcess -Config $Config }
-                "2" { Toggle-GameConfigState }
-                "3" { Add-GameConfigInteractively }
-                "4" { Edit-GameConfigInteractively }
-                "5" { Show-ProgramConfig -Config $Config }
-                "6" { Show-GameConfigList }
+                "2" { Invoke-RemoveOnlyProcess -Config $Config }
+                "3" { Toggle-GameConfigState }
+                "4" { Add-GameConfigInteractively }
+                "5" { Edit-GameConfigInteractively }
+                "6" { Show-ProgramConfig -Config $Config }
+                "7" { Show-GameConfigList }
                 "Q" {
                     Write-Log "User exited from main menu"
                     return
                 }
                 default {
-                    Write-Host "Invalid option, choose 1-6 or Q." -ForegroundColor Yellow
+                    Write-Host "Invalid option, choose 1-7 or Q." -ForegroundColor Yellow
                 }
             }
         }
