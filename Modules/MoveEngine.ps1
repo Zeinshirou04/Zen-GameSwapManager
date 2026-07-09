@@ -1,8 +1,15 @@
-function Move-Game {
-    param($Source, $Destination, $Name, $Config)
+function Invoke-RobocopyTransfer {
+    param(
+        [string]$Source,
+        [string]$Destination,
+        [string]$Name,
+        $Config,
+        [switch]$Move
+    )
 
-    Write-Log "Moving $Name from $Source to $Destination"
-    Write-Host ("Starting move: {0}" -f $Name) -ForegroundColor Cyan
+    $operation = if ($Move) { "Moving" } else { "Copying" }
+    Write-Log "$operation $Name from $Source to $Destination"
+    Write-Host ("Starting {0}: {1}" -f $operation.ToLowerInvariant(), $Name) -ForegroundColor Cyan
 
     $retry = $Config.Robocopy.RetryCount
     $wait  = $Config.Robocopy.WaitSeconds
@@ -16,11 +23,14 @@ function Move-Game {
         $Source
         $Destination
         "/E"
-        "/MOVE"
         "/R:$retry"
         "/W:$wait"
         "/MT:$mt"
     )
+
+    if ($Move) {
+        $args += "/MOVE"
+    }
 
     if (-not $verbose) {
         $args += "/NFL"
@@ -29,10 +39,7 @@ function Move-Game {
 
     $output = robocopy @args
     foreach ($line in $output) {
-        if ($verbose) {
-            Write-Host $line
-        }
-
+        if ($verbose) { Write-Host $line }
         Write-Log $line
     }
 
@@ -43,15 +50,33 @@ function Move-Game {
         throw $message
     }
 
-    Write-Log "Move completed for $Name"
-    Write-Host ("Completed move: {0}" -f $Name) -ForegroundColor Green
+    Write-Log "$operation completed for $Name"
+    Write-Host ("Completed {0}: {1}" -f $operation.ToLowerInvariant(), $Name) -ForegroundColor Green
 }
 
+function Move-Game {
+    param($Source, $Destination, $Name, $Config)
+    Invoke-RobocopyTransfer -Source $Source -Destination $Destination -Name $Name -Config $Config -Move
+}
+
+function Copy-Game {
+    param($Source, $Destination, $Name, $Config)
+    Invoke-RobocopyTransfer -Source $Source -Destination $Destination -Name $Name -Config $Config
+}
+
+function Remove-ActiveGame {
+    param($Path, $Name)
+
+    Write-Log "Removing active copy for $Name at $Path"
+    Write-Host ("Removing active copy: {0}" -f $Name) -ForegroundColor Yellow
+    Remove-Item -LiteralPath $Path -Recurse -Force
+    Write-Log "Removed active copy for $Name"
+}
 
 function Flush-E {
     param($Games, $Config)
 
-    $activeGames = $Games | Where-Object { $_.State -eq "E" }
+    $activeGames = $Games | Where-Object { $_.State -eq "Active" -or $_.State -eq "E" }
 
     foreach ($g in $activeGames) {
         Move-Game $g.EPath $g.FPath $g.Name $Config

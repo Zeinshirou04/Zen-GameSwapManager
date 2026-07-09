@@ -13,7 +13,7 @@ $exitCode = 0
 
 try {
     Show-Header -Version $Config.Application.Version
-    Show-DriveStats -Active $Config.Slots.Active -Storage $Config.Slots.Storage
+    Show-DriveStats -Gaming (Get-ConfiguredGamingSlots $Config) -Storage $Config.Slots.Storage
 
     Start-SwapProcess -Config $Config
 }
