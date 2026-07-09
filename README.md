@@ -36,8 +36,8 @@ The current algorithm avoids moving active games back to storage. Instead, you c
 1. Loads all game definitions from the `Games` folder.
 2. Detects whether each game is on any configured gaming drive or in storage.
 3. Displays currently active games and their gaming drive.
-4. Opens a menu with actions: copy games, remove active games, enable/disable configs, add config, edit config, and view config.
-5. For copy operations, prompts the user to select a primary game from storage and then choose a gaming drive target (`D:` or `E:` by default).
+4. Opens a standardized menu with actions: Move Game, Remove Active Game, Remove Game Config, Add Game Config, Edit Existing Config, View Program Config, and View Game Lists.
+5. For Move Game operations, prompts the user to select a primary game from storage and then choose a gaming drive target (`D:` or `E:` by default) using the dynamic path from the game config.
 6. Calculates usable capacity on the chosen target drive, including active games on that same drive that can be removed if required.
 7. Allows ordered, comma-separated selection of additional games that fit within remaining capacity.
 8. Displays a final planned copy summary.
@@ -45,9 +45,24 @@ The current algorithm avoids moving active games back to storage. Instead, you c
    - Deletes active games on the chosen target drive only when space is required.
    - Deletes only active games whose storage copy exists and has the same byte size.
    - Copies selected games from storage to the chosen gaming drive.
-10. For remove-only operations, prompts for an active game and deletes it only after storage size verification.
+10. For Remove Active Game operations, prompts for an active game and deletes only the active-drive copy after storage size verification.
 11. Logs the entire process.
 12. Waits for Enter before closing.
+
+---
+
+
+## Menu Options
+
+1. **Move Game** — moves/copies a game from storage (`O:` by default) to a configured gaming drive (`D:` or `E:` by default), using dynamic paths from each game config.
+2. **Remove Active Game** — removes only the active copy from a gaming drive; the storage copy is kept.
+3. **Remove Game Config** — deletes only a selected file from `Games/`; it does not delete game files.
+4. **Add Game Config** — asks for game name and full game path, then removes the drive letter so paths stay dynamic across gaming/storage drives.
+5. **Edit Existing Config** — changes only the game name or game path.
+6. **View Program Config** — shows the loaded values from `Config.ps1`, including gaming and storage drives.
+7. **View Game Lists** — shows enabled games and whether each one is active, stored, or missing.
+
+Each menu page includes a short description explaining what that page does.
 
 ---
 
@@ -69,7 +84,7 @@ The current algorithm avoids moving active games back to storage. Instead, you c
 
 You can directly edit variables in `Config.ps1` (for example drive letters, safety settings, and Robocopy behavior), then re-run `./Main.ps1` to apply changes.
 
-When a game config is disabled from the menu, its extension is changed from `.ps1` to `.disabled`. Re-enabling changes it back to `.ps1`.
+The Remove Game Config menu deletes only the selected config file from `Games/`; it does not delete files from gaming or storage drives.
 
 ---
 

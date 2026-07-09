@@ -75,8 +75,9 @@ function Select-Game {
 
     Write-Host ""
     Write-Host "============================================" -ForegroundColor DarkCyan
-    Write-Host "       Available Games (Storage)" -ForegroundColor Cyan
+    Write-Host "       Move Game" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Move a game from the storage drive to one of the configured gaming drives." -ForegroundColor DarkGray
     Write-Host ""
 
     for ($i = 0; $i -lt $stored.Count; $i++) {
@@ -317,6 +318,7 @@ function Select-TargetGamingDrive {
     Write-Host "============================================" -ForegroundColor DarkCyan
     Write-Host "       Choose Gaming Drive Target" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Choose where the game should be moved from storage. Only configured gaming drives are shown." -ForegroundColor DarkGray
 
     for ($i = 0; $i -lt $gamingSlots.Count; $i++) {
         $slot = $gamingSlots[$i]
@@ -356,8 +358,9 @@ function Select-ActiveGameForRemoval {
 
     Write-Host ""
     Write-Host "============================================" -ForegroundColor DarkCyan
-    Write-Host "       Active Games to Remove" -ForegroundColor Cyan
+    Write-Host "       Remove Active Game" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Removes only the active copy from a gaming drive after verifying the storage copy remains on the storage drive." -ForegroundColor DarkGray
 
     for ($i = 0; $i -lt $active.Count; $i++) {
         $size = [math]::Round(($active[$i].SizeBytes / 1GB), 2)
@@ -587,8 +590,9 @@ function Show-GameConfigList {
 
     Write-Host ""
     Write-Host "============================================" -ForegroundColor DarkCyan
-    Write-Host "              Game Configs" -ForegroundColor Cyan
+    Write-Host "              Game Config Files" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Shows config files stored in Games/." -ForegroundColor DarkGray
 
     if ($files.Count -eq 0) {
         Write-Host "No game config files found in Games/." -ForegroundColor Yellow
@@ -601,13 +605,98 @@ function Show-GameConfigList {
     }
 }
 
+
+function Show-GameList {
+    param($Config)
+
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "              View Game Lists" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Shows each enabled game and whether it is active on a gaming drive, stored on the storage drive, or missing." -ForegroundColor DarkGray
+
+    $games = Get-Games $Config
+    $games = Get-GameState $games $Config
+
+    if ($games.Count -eq 0) {
+        Write-Host "No enabled game configs found in Games/." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host ""
+    foreach ($g in ($games | Sort-Object Name)) {
+        $location = switch ($g.State) {
+            "Active" { "Active on $($g.ActiveSlot):" }
+            "Storage" { "Stored on $($Config.Slots.Storage):" }
+            default { "Missing" }
+        }
+
+        Write-Host ("- {0,-30} {1}" -f $g.Name, $location)
+    }
+}
+
+function Remove-GameConfig {
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "              Remove Game Config" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Deletes only a config file from Games/. It does not remove game files from gaming or storage drives." -ForegroundColor DarkGray
+
+    $selected = Select-ConfigFile
+    if ($null -eq $selected) { return }
+
+    Write-Host ""
+    Write-Host ("Delete config '{0}' from Games/? This does not delete game files. (Y/N)" -f $selected.Name) -ForegroundColor Yellow
+    $confirm = (Read-Host).Trim().ToUpper()
+    if ($confirm -ne "Y") {
+        Write-Host "Remove config cancelled."
+        Write-Log "Remove game config cancelled: $($selected.Name)"
+        return
+    }
+
+    Remove-Item -LiteralPath $selected.FullName -Force
+    Write-Log "Game config removed: $($selected.Name)"
+    Write-Host "Removed config: $($selected.Name)" -ForegroundColor Green
+}
+
+function Convert-GamePathToRelativeParts {
+    param([string]$GamePath)
+
+    $trimmed = $GamePath.Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        throw "Game path is required."
+    }
+
+    $withoutDrive = $trimmed -replace '^[A-Za-z]:[\\/]*', ''
+    $withoutDrive = $withoutDrive -replace '/', '\'
+    $withoutDrive = $withoutDrive.Trim('\')
+
+    if ([string]::IsNullOrWhiteSpace($withoutDrive)) {
+        throw "Game path must include a folder path after the drive letter."
+    }
+
+    $parts = @($withoutDrive -split '\\' | Where-Object { $_ -ne '' })
+    if ($parts.Count -eq 0) {
+        throw "Game path must include a game folder."
+    }
+
+    $gameFolder = $parts[-1]
+    $libraryRelativePath = if ($parts.Count -gt 1) { ($parts[0..($parts.Count - 2)] -join '\') } else { '' }
+
+    return [pscustomobject]@{
+        GameFolder          = $gameFolder
+        LibraryRelativePath = $libraryRelativePath
+    }
+}
+
 function Show-ProgramConfig {
     param($Config)
 
     Write-Host ""
     Write-Host "============================================" -ForegroundColor DarkCyan
-    Write-Host "              Program Config" -ForegroundColor Cyan
+    Write-Host "              View Program Config" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Shows the current values loaded from Config.ps1." -ForegroundColor DarkGray
 
     Write-Host ("Slots.Gaming                : {0}" -f (($Config.Slots.Gaming) -join ", "))
     Write-Host ("Slots.Storage               : {0}" -f $Config.Slots.Storage)
@@ -682,8 +771,10 @@ foreach (`$slot in `$gamingSlots) {
 
 function Add-GameConfigInteractively {
     Write-Host ""
-    Write-Host "Add New Game Config" -ForegroundColor Cyan
-    Write-Host "Leave blank to use default library path SteamLibrary\\steamapps\\common"
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "              Add Game Config" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Creates a game config from a display name and full game path. The drive letter is removed so the config stays dynamic." -ForegroundColor DarkGray
 
     $name = (Read-Host "Game display name").Trim()
     if ([string]::IsNullOrWhiteSpace($name)) {
@@ -691,18 +782,10 @@ function Add-GameConfigInteractively {
         return
     }
 
-    $folder = (Read-Host "Game folder name (exact directory name)").Trim()
-    if ([string]::IsNullOrWhiteSpace($folder)) {
-        Write-Host "Game folder name is required." -ForegroundColor Yellow
-        return
-    }
+    $gamePath = (Read-Host "Full game path (example: E:\SteamLibrary\steamapps\common\Game Folder)").Trim()
+    $pathParts = Convert-GamePathToRelativeParts -GamePath $gamePath
 
-    $libraryPath = (Read-Host "Library relative path")
-    if ([string]::IsNullOrWhiteSpace($libraryPath)) {
-        $libraryPath = "SteamLibrary\\steamapps\\common"
-    }
-
-    New-GameConfigFile -Name $name -GameFolder $folder -LibraryRelativePath $libraryPath
+    New-GameConfigFile -Name $name -GameFolder $pathParts.GameFolder -LibraryRelativePath $pathParts.LibraryRelativePath
 }
 
 function Select-ConfigFile {
@@ -776,29 +859,23 @@ function Edit-GameConfigInteractively {
     }
 
     $currentName = $gameObj.Name
-    $currentFolder = Split-Path $gameObj.EPath -Leaf
-
-    $currentLibraryPath = "SteamLibrary\\steamapps\\common"
-    $prefix = "E:\\"
-    if ($gameObj.EPath -like "$prefix*") {
-        $relative = $gameObj.EPath.Substring($prefix.Length)
-        $parts = $relative -split '\\'
-        if ($parts.Length -gt 1) {
-            $currentLibraryPath = ($parts[0..($parts.Length - 2)] -join "\\")
-        }
-    }
+    $currentPath = $gameObj.EPath
 
     Write-Host ""
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "              Edit Existing Config" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Changes only the game display name or game path for an existing config." -ForegroundColor DarkGray
     Write-Host "Editing $($selected.Name) (leave blank to keep current value)" -ForegroundColor Cyan
 
     $newName = Read-Host "Game display name [$currentName]"
     if ([string]::IsNullOrWhiteSpace($newName)) { $newName = $currentName }
 
-    $newFolder = Read-Host "Game folder name [$currentFolder]"
-    if ([string]::IsNullOrWhiteSpace($newFolder)) { $newFolder = $currentFolder }
-
-    $newLibraryPath = Read-Host "Library relative path [$currentLibraryPath]"
-    if ([string]::IsNullOrWhiteSpace($newLibraryPath)) { $newLibraryPath = $currentLibraryPath }
+    $newPath = Read-Host "Game path [$currentPath]"
+    if ([string]::IsNullOrWhiteSpace($newPath)) { $newPath = $currentPath }
+    $pathParts = Convert-GamePathToRelativeParts -GamePath $newPath
+    $newFolder = $pathParts.GameFolder
+    $newLibraryPath = $pathParts.LibraryRelativePath
 
     $content = @"
 param(`$Config)
@@ -840,13 +917,20 @@ function Start-SwapProcess {
         Write-Host "============================================" -ForegroundColor DarkCyan
         Write-Host "                 Main Menu" -ForegroundColor Cyan
         Write-Host "============================================" -ForegroundColor DarkCyan
-        Write-Host "[1] Copy game from storage to a gaming drive"
-        Write-Host "[2] Remove active game from a gaming drive"
-        Write-Host "[3] Enable/Disable game config"
-        Write-Host "[4] Add game config"
-        Write-Host "[5] Edit existing config"
-        Write-Host "[6] View program config"
-        Write-Host "[7] View game config list"
+        Write-Host "[1] Move Game"
+        Write-Host "    Move a game from storage to the gaming drive defined by the selected target/path config." -ForegroundColor DarkGray
+        Write-Host "[2] Remove Active Game"
+        Write-Host "    Remove only the active game copy from D: or E:, not from storage." -ForegroundColor DarkGray
+        Write-Host "[3] Remove Game Config"
+        Write-Host "    Delete only the selected config file from Games/." -ForegroundColor DarkGray
+        Write-Host "[4] Add Game Config"
+        Write-Host "    Create a dynamic config from game name and full game path with the drive letter removed." -ForegroundColor DarkGray
+        Write-Host "[5] Edit Existing Config"
+        Write-Host "    Change only game name or game path." -ForegroundColor DarkGray
+        Write-Host "[6] View Program Config"
+        Write-Host "    Show everything currently available in Config.ps1." -ForegroundColor DarkGray
+        Write-Host "[7] View Game Lists"
+        Write-Host "    Show all games and whether each is active, stored, or missing." -ForegroundColor DarkGray
         Write-Host "[Q] Quit"
 
         $choice = (Read-Host "Choose an option").Trim().ToUpper()
@@ -855,11 +939,11 @@ function Start-SwapProcess {
             switch ($choice) {
                 "1" { Invoke-SwapProcess -Config $Config }
                 "2" { Invoke-RemoveOnlyProcess -Config $Config }
-                "3" { Toggle-GameConfigState }
+                "3" { Remove-GameConfig }
                 "4" { Add-GameConfigInteractively }
                 "5" { Edit-GameConfigInteractively }
                 "6" { Show-ProgramConfig -Config $Config }
-                "7" { Show-GameConfigList }
+                "7" { Show-GameList -Config $Config }
                 "Q" {
                     Write-Log "User exited from main menu"
                     return
