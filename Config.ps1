@@ -1,7 +1,12 @@
 @{
     Slots = @{
+        # Gaming drives can both be used for playing games.
+        # The copy target is selected per operation based on free space.
+        Gaming  = @("D", "E")
+        Storage = "O"
+
+        # Backward-compatible alias used by older game configs.
         Active  = "E"
-        Storage = "F"
     }
 
     Safety = @{
@@ -22,6 +27,6 @@
     }
 
     Application = @{
-        Version = "1.2.1"
+        Version = "1.4.0"
     }
 }

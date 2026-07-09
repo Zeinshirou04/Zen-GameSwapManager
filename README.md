@@ -1,166 +1,170 @@
 # Game Swap Manager
 
-A modular PowerShell-based storage orchestration tool for managing large
-game libraries across multiple drives.
+A modular PowerShell-based storage orchestration tool for managing large game libraries across multiple drives.
 
-Game Swap Manager allows you to intelligently plan and execute game
-transfers between:
+Game Swap Manager now supports two gaming drives and one storage drive by default:
 
--   **Active Drive (E/Any Drive Letter Slot)** -- Performance drive for currently played
-    games\
--   **Storage Drive (F/Any Drive Letter Slot)** -- Archive drive for unused games
+- **Gaming Drives D and E:** both can be used as play/install locations.
+- **Storage Drive O:** HDD/storage archive for games that should remain available as the source of truth.
 
-The system calculates total usable capacity, lets you interactively
-select which games to activate, and safely performs batch transfers
-using Robocopy with full logging and failure protection.
+The current algorithm avoids moving active games back to storage. Instead, you choose which gaming drive should receive a game based on available space. When freeing space, the tool verifies the active copy already exists in storage with the same byte size before deleting it.
 
-------------------------------------------------------------------------
+---
 
 ## Features
 
--   Modular architecture
--   Configuration-driven behavior
--   Interactive capacity planning
--   Main menu for move/config management
--   Enable/disable game config files without deleting
--   Add/edit game config files directly from terminal
--   Batch execution (no partial swap execution)
--   Automatic E-slot flush before activation
--   Smart remaining capacity calculation
--   Full logging of operations, warnings, and errors
--   Configurable Robocopy behavior
--   Safe failure handling (terminates on error)
+- Modular architecture
+- Configuration-driven multi-drive behavior
+- Gaming drives default to `D:` and `E:` with storage on `O:`
+- Per-operation target-drive selection based on free space
+- Remove-only workflow for freeing a gaming drive without copying another game
+- Copy/delete workflow instead of two-way swap moves
+- Storage copy size verification before deleting an active game
+- Interactive capacity planning for the chosen target drive
+- Main menu for copy/config management
+- Enable/disable game config files without deleting
+- Add/edit game config files directly from terminal
+- Ordered selection of multiple games to copy
+- Full logging of operations, warnings, and errors
+- Configurable Robocopy behavior
+- Safe failure handling with retry/skip/abort prompts
 
-------------------------------------------------------------------------
+---
 
 ## How It Works
 
-1.  Loads all game definitions from the `Games` folder.
+1. Loads all game definitions from the `Games` folder.
+2. Detects whether each game is on any configured gaming drive or in storage.
+3. Displays currently active games and their gaming drive.
+4. Opens a standardized menu with actions: Move Game, Remove Active Game, Remove Game Config, Add Game Config, Edit Existing Config, View Program Config, and View Game Lists.
+5. For Move Game operations, prompts the user to select a primary game from storage and then choose a gaming drive target (`D:` or `E:` by default) using the dynamic path from the game config.
+6. Calculates usable capacity on the chosen target drive, including active games on that same drive that can be removed if required.
+7. Allows ordered, comma-separated selection of additional games that fit within remaining capacity.
+8. Displays a final planned copy summary.
+9. Upon confirmation:
+   - Deletes active games on the chosen target drive only when space is required.
+   - Deletes only active games whose storage copy exists and has the same byte size.
+   - Copies selected games from storage to the chosen gaming drive.
+10. For Remove Active Game operations, prompts for an active game and deletes only the active-drive copy after storage size verification.
+11. Logs the entire process.
+12. Waits for Enter before closing.
 
-2.  Detects current state (games in Active and Storage).
+---
 
-3.  Displays currently active games.
 
-4.  Opens a menu with actions (move games, enable/disable configs, add config, edit config).
+## Menu Options
 
-5.  For move operations, prompts user to select a primary game to activate.
+1. **Move Game** — moves/copies a game from storage (`O:` by default) to a configured gaming drive (`D:` or `E:` by default), using dynamic paths from each game config.
+2. **Remove Active Game** — removes only the active copy from a gaming drive; the storage copy is kept.
+3. **Remove Game Config** — deletes only a selected file from `Games/`; it does not delete game files.
+4. **Add Game Config** — asks for game name and full game path, then removes the drive letter so paths stay dynamic across gaming/storage drives.
+5. **Edit Existing Config** — changes only the game name or game path.
+6. **View Program Config** — shows the loaded values from `Config.ps1`, including gaming and storage drives.
+7. **View Game Lists** — shows enabled games and whether each one is active, stored, or missing.
 
-6.  Calculates total usable capacity:
+Each menu page includes a short description explaining what that page does.
 
-    Total Capacity = Free Space on Active Drive + Size of Games
-    Currently in Active
-
-7.  Allows ordered, comma-separated selection of multiple additional
-    games that fit within remaining capacity (for example: `1,3,2`).
-
-8.  Displays a final planned move summary.
-
-9.  Upon confirmation:
-
-    -   Flushes all games from Active to Storage.
-    -   Moves selected games from Storage to Active.
-
-10. Logs the entire process.
-
-11. Waits for Enter before closing.
-
-------------------------------------------------------------------------
+---
 
 ## Configuration
 
-`config.ps1` must return a hashtable:
+`Config.ps1` returns a hashtable. The default drive layout is:
 
-``` powershell
+```powershell
 @{
-    Application = @{
-        Version = "1.2.0"
-    }
-
     Slots = @{
-        Active  = "E"
-        Storage = "F"
-    }
+        Gaming  = @("D", "E")
+        Storage = "O"
 
-    Robocopy = @{
-        RetryCount       = 2
-        WaitSeconds      = 2
-        MultiThread      = 8
-        VerboseByDefault = $false
+        # Backward-compatible alias for older game definitions.
+        Active  = "E"
     }
 }
 ```
 
-You can directly edit variables in `Config.ps1` (for example drive
-letters, safety settings, and Robocopy behavior), then re-run
-`.\Main.ps1` to apply changes.
+You can directly edit variables in `Config.ps1` (for example drive letters, safety settings, and Robocopy behavior), then re-run `./Main.ps1` to apply changes.
 
-When a game config is disabled from the menu, its extension is changed
-from `.ps1` to `.disabled`. Re-enabling changes it back to `.ps1`.
+The Remove Game Config menu deletes only the selected config file from `Games/`; it does not delete files from gaming or storage drives.
 
-------------------------------------------------------------------------
+---
 
 ## Game Definition Format
 
-Each file inside `Games/` must return:
+Each file inside `Games/` must return a hashtable. New configs generated by the app include multi-drive paths:
 
-``` powershell
+```powershell
 param($Config)
 
-$active  = $Config.Slots.Active
-$storage = $Config.Slots.Storage
+$gamingSlots = Get-ConfiguredGamingSlots $Config
+$activeAlias = $Config.Slots.Active
+$storage     = $Config.Slots.Storage
 
-$activeRoot  = "$($active):\SteamLibrary\steamapps\common"
+$activePaths = @{}
+foreach ($slot in $gamingSlots) {
+    $root = "$($slot):\SteamLibrary\steamapps\common"
+    $activePaths[$slot] = Join-Path $root "Example Game"
+}
+
+$activeRoot = "$($activeAlias):\SteamLibrary\steamapps\common"
 $storageRoot = "$($storage):\SteamLibrary\steamapps\common"
 
 @{
-    Name  = "Counter-Strike Global Offensive"
-    EPath = Join-Path $activeRoot  "Counter-Strike Global Offensive"
-    FPath = Join-Path $storageRoot "Counter-Strike Global Offensive"
+    Name        = "Example Game"
+    ActivePaths = $activePaths
+    EPath       = Join-Path $activeRoot "Example Game"
+    FPath       = Join-Path $storageRoot "Example Game"
+    StoragePath = Join-Path $storageRoot "Example Game"
 }
 ```
 
-------------------------------------------------------------------------
+Older definitions that only provide `EPath` and `FPath` are still supported. The app derives gaming-drive paths from `EPath` and treats `FPath` as the storage path.
+
+---
 
 ## Requirements
 
--   Windows
--   PowerShell 5.1 or later
--   Robocopy (included with Windows)
+- Windows
+- PowerShell 5.1 or later
+- Robocopy (included with Windows)
 
-------------------------------------------------------------------------
+---
 
 ## Running the Program
 
 Open PowerShell in the project directory:
 
-``` powershell
+```powershell
 .\Main.ps1
 ```
 
 If execution policy blocks scripts:
 
-``` powershell
+```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-------------------------------------------------------------------------
+---
 
 ## Logging
 
 Logs are written to:
 
+```text
 Logs/SwapLog_YYYYMMDD_HHMMSS.log
+```
 
 Log levels:
 
--   INFO
--   ERROR
+- INFO
+- WARN
+- ERROR
 
-------------------------------------------------------------------------
+---
 
 ## Safety Design
 
--   Script terminates on Robocopy failure (exit code ≥ 8)
--   No partial swap execution
--   Capacity planning occurs before any file operations
--   Confirmation required before execution
+- No active game is deleted unless its storage copy exists and has the same byte size.
+- Selected games are copied from storage rather than moved out of storage.
+- Robocopy failures with exit code `>= 8` are treated as errors.
+- Capacity planning occurs before file operations.
+- Confirmation is required before execution.
