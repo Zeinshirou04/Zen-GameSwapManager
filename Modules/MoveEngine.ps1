@@ -4,10 +4,11 @@ function Invoke-RobocopyTransfer {
         [string]$Destination,
         [string]$Name,
         $Config,
-        [switch]$Move
+        [switch]$Move,
+        [switch]$Mirror
     )
 
-    $operation = if ($Move) { "Moving" } else { "Copying" }
+    $operation = if ($Move) { "Moving" } elseif ($Mirror) { "Backing up" } else { "Copying" }
     Write-Log "$operation $Name from $Source to $Destination"
     Write-Host ("Starting {0}: {1}" -f $operation.ToLowerInvariant(), $Name) -ForegroundColor Cyan
 
@@ -22,11 +23,17 @@ function Invoke-RobocopyTransfer {
     $args = @(
         $Source
         $Destination
-        "/E"
         "/R:$retry"
         "/W:$wait"
         "/MT:$mt"
     )
+
+    if ($Mirror) {
+        $args += "/MIR"
+    }
+    else {
+        $args += "/E"
+    }
 
     if ($Move) {
         $args += "/MOVE"
@@ -62,6 +69,11 @@ function Move-Game {
 function Copy-Game {
     param($Source, $Destination, $Name, $Config)
     Invoke-RobocopyTransfer -Source $Source -Destination $Destination -Name $Name -Config $Config
+}
+
+function Backup-GameToStorage {
+    param($Source, $Destination, $Name, $Config)
+    Invoke-RobocopyTransfer -Source $Source -Destination $Destination -Name $Name -Config $Config -Mirror
 }
 
 function Remove-ActiveGame {
