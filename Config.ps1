@@ -10,7 +10,7 @@
     }
 
     Safety = @{
-        AbortWhenUnmanaged   = $true
+        AbortWhenUnmanaged   = $false
         MaxUnmanagedExamples = 5
     }
 
