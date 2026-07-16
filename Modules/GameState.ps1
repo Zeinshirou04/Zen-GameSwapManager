@@ -94,9 +94,12 @@ function Get-FreeSpace {
 }
 
 function Test-StorageCopyMatchesActive {
-    param($Game)
+    param($Game, [double]$ToleranceRatio = 0.02)
 
     $activeSize = Get-GameSize $Game.ActivePath
     $storageSize = Get-GameSize $Game.StoragePath
-    return ($activeSize -gt 0 -and $activeSize -eq $storageSize)
+    if ($activeSize -le 0) { return $false }
+
+    $diff = [Math]::Abs($activeSize - $storageSize)
+    return ($diff / $activeSize) -le $ToleranceRatio
 }
