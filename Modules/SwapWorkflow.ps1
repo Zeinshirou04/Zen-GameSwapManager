@@ -347,6 +347,71 @@ function Select-TargetGamingDrive {
     return $gamingSlots[$index]
 }
 
+function Select-ActiveGameForBackup {
+    param($Games)
+
+    $active = @($Games | Where-Object { $_.State -eq "Active" -or $_.State -eq "E" })
+    if ($active.Count -eq 0) {
+        Write-Host "No active games are available to back up." -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "       Backup Active Game to Storage" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor DarkCyan
+    Write-Host "Updates the storage copy to exactly match the selected active copy on a gaming drive." -ForegroundColor DarkGray
+    Write-Host "Files removed from the active copy will also be removed from storage so future moves stay close in size." -ForegroundColor DarkGray
+
+    for ($i = 0; $i -lt $active.Count; $i++) {
+        $size = [math]::Round(($active[$i].SizeBytes / 1GB), 2)
+        Write-Host ("[{0}] {1,-25} {2}: {3,8} GB" -f ($i + 1), $active[$i].Name, $active[$i].ActiveSlot, $size)
+    }
+
+    Write-Host ""
+    Write-Host "Choose the active game to back up (Q to cancel):" -ForegroundColor Green
+    $choice = (Read-Host ">").Trim()
+
+    if ($choice.ToUpper() -eq "Q") { return $null }
+    if (-not ($choice -match '^\d+$')) { throw "Invalid selection '$choice'." }
+
+    $index = [int]$choice - 1
+    if ($index -lt 0 -or $index -ge $active.Count) { throw "Selection '$choice' is out of range." }
+
+    return $active[$index]
+}
+
+function Invoke-BackupToStorageProcess {
+    param($Config)
+
+    Write-Log "Backup-to-storage operation started"
+
+    $games = Get-Games $Config
+    $games = Get-GameState $games $Config
+
+    foreach ($g in $games) {
+        $sizePath = if ($g.State -eq "Active" -or $g.State -eq "E") { $g.ActivePath } else { $g.StoragePath }
+        $size = Get-GameSize $sizePath
+        $g | Add-Member -NotePropertyName SizeBytes -NotePropertyValue $size -Force
+    }
+
+    $selected = Select-ActiveGameForBackup $games
+    if ($null -eq $selected) { return }
+
+    Write-Host ""
+    Write-Host ("Back up '{0}' from {1}: to storage {2}:? Storage will be mirrored to match the active copy. (Y/N)" -f $selected.Name, $selected.ActiveSlot, $Config.Slots.Storage) -ForegroundColor Yellow
+    $confirm = (Read-Host).ToUpper()
+    if ($confirm -ne "Y") {
+        Write-Host "Backup cancelled."
+        Write-Log "Backup-to-storage operation cancelled at confirmation"
+        return
+    }
+
+    Backup-GameToStorage -Source $selected.ActivePath -Destination $selected.StoragePath -Name $selected.Name -Config $Config
+    Write-Log "Backup-to-storage operation finished successfully"
+    Write-Host "Backup completed successfully." -ForegroundColor Green
+}
+
 function Select-ActiveGameForRemoval {
     param($Games)
 
@@ -919,17 +984,19 @@ function Start-SwapProcess {
         Write-Host "============================================" -ForegroundColor DarkCyan
         Write-Host "[1] Move Game"
         Write-Host "    Move a game from storage to the gaming drive defined by the selected target/path config." -ForegroundColor DarkGray
-        Write-Host "[2] Remove Active Game"
+        Write-Host "[2] Backup Active Game to Storage"
+        Write-Host "    Mirror the selected active copy to storage so storage matches current game files." -ForegroundColor DarkGray
+        Write-Host "[3] Remove Active Game"
         Write-Host "    Remove only the active game copy from D: or E:, not from storage." -ForegroundColor DarkGray
-        Write-Host "[3] Remove Game Config"
+        Write-Host "[4] Remove Game Config"
         Write-Host "    Delete only the selected config file from Games/." -ForegroundColor DarkGray
-        Write-Host "[4] Add Game Config"
+        Write-Host "[5] Add Game Config"
         Write-Host "    Create a dynamic config from game name and full game path with the drive letter removed." -ForegroundColor DarkGray
-        Write-Host "[5] Edit Existing Config"
+        Write-Host "[6] Edit Existing Config"
         Write-Host "    Change only game name or game path." -ForegroundColor DarkGray
-        Write-Host "[6] View Program Config"
+        Write-Host "[7] View Program Config"
         Write-Host "    Show everything currently available in Config.ps1." -ForegroundColor DarkGray
-        Write-Host "[7] View Game Lists"
+        Write-Host "[8] View Game Lists"
         Write-Host "    Show all games and whether each is active, stored, or missing." -ForegroundColor DarkGray
         Write-Host "[Q] Quit"
 
@@ -938,18 +1005,19 @@ function Start-SwapProcess {
         try {
             switch ($choice) {
                 "1" { Invoke-SwapProcess -Config $Config }
-                "2" { Invoke-RemoveOnlyProcess -Config $Config }
-                "3" { Remove-GameConfig }
-                "4" { Add-GameConfigInteractively }
-                "5" { Edit-GameConfigInteractively }
-                "6" { Show-ProgramConfig -Config $Config }
-                "7" { Show-GameList -Config $Config }
+                "2" { Invoke-BackupToStorageProcess -Config $Config }
+                "3" { Invoke-RemoveOnlyProcess -Config $Config }
+                "4" { Remove-GameConfig }
+                "5" { Add-GameConfigInteractively }
+                "6" { Edit-GameConfigInteractively }
+                "7" { Show-ProgramConfig -Config $Config }
+                "8" { Show-GameList -Config $Config }
                 "Q" {
                     Write-Log "User exited from main menu"
                     return
                 }
                 default {
-                    Write-Host "Invalid option, choose 1-7 or Q." -ForegroundColor Yellow
+                    Write-Host "Invalid option, choose 1-8 or Q." -ForegroundColor Yellow
                 }
             }
         }
